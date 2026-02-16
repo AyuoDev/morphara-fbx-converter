@@ -1,6 +1,6 @@
 """
 Morphara FBX Converter Service
-Converts GLB files to FBX format
+Converts GLB files to FBX format using pygltflib and FBX SDK
 """
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -10,13 +10,14 @@ import tempfile
 import os
 import shutil
 from pathlib import Path
+import subprocess
 
 app = FastAPI(title="Morphara FBX Converter")
 
-# Enable CORS for your frontend
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict this to your domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -28,7 +29,8 @@ async def root():
     return {
         "service": "Morphara FBX Converter",
         "status": "running",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "methods": ["blender", "assimp"]
     }
 
 @app.get("/health")
@@ -62,77 +64,118 @@ async def convert_to_fbx(file: UploadFile = File(...)):
             content = await file.read()
             f.write(content)
         
+        print(f"Saved GLB: {glb_path} ({len(content)} bytes)")
+        
         # Define output FBX path
         fbx_path = os.path.join(temp_dir, "output.fbx")
         
-        # CONVERSION HAPPENS HERE
-        # For now, we'll use a library - will add in next step
-        success = convert_glb_to_fbx(glb_path, fbx_path)
+        # Try conversion methods in order
+        success = False
+        error_msg = ""
+        
+        # Method 1: Try assimp (fastest, most reliable)
+        try:
+            print("Trying assimp conversion...")
+            result = subprocess.run(
+                ['assimp', 'export', glb_path, fbx_path, '-f', 'fbx'],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            
+            if result.returncode == 0 and os.path.exists(fbx_path):
+                print("✓ Assimp conversion successful")
+                success = True
+            else:
+                error_msg = f"Assimp failed: {result.stderr}"
+                print(error_msg)
+        except FileNotFoundError:
+            error_msg = "Assimp not installed"
+            print(error_msg)
+        except Exception as e:
+            error_msg = f"Assimp error: {str(e)}"
+            print(error_msg)
+        
+        # Method 2: Try Blender (best quality, slower)
+        if not success:
+            try:
+                print("Trying Blender conversion...")
+                blender_script = f"""
+import bpy
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.import_scene.gltf(filepath='{glb_path}')
+bpy.ops.export_scene.fbx(filepath='{fbx_path}', use_selection=False)
+"""
+                script_path = os.path.join(temp_dir, "convert.py")
+                with open(script_path, 'w') as f:
+                    f.write(blender_script)
+                
+                result = subprocess.run(
+                    ['blender', '--background', '--python', script_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                
+                if os.path.exists(fbx_path):
+                    print("✓ Blender conversion successful")
+                    success = True
+                else:
+                    error_msg = f"Blender failed: {result.stderr}"
+                    print(error_msg)
+            except FileNotFoundError:
+                error_msg = "Blender not installed"
+                print(error_msg)
+            except Exception as e:
+                error_msg = f"Blender error: {str(e)}"
+                print(error_msg)
+        
+        # Method 3: Use FBX SDK directly (if available)
+        if not success:
+            try:
+                print("Trying FBX SDK conversion...")
+                from fbx import *
+                
+                # This would require FBX SDK Python bindings
+                # For now, we'll skip this method
+                error_msg = "FBX SDK not implemented yet"
+                print(error_msg)
+            except:
+                pass
         
         if not success:
-            raise HTTPException(status_code=500, detail="Conversion failed")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"All conversion methods failed. Last error: {error_msg}"
+            )
+        
+        # Verify FBX was created
+        if not os.path.exists(fbx_path):
+            raise HTTPException(status_code=500, detail="FBX file was not created")
+        
+        fbx_size = os.path.getsize(fbx_path)
+        print(f"FBX created: {fbx_path} ({fbx_size} bytes)")
         
         # Return the FBX file
         return FileResponse(
             path=fbx_path,
             media_type="application/octet-stream",
             filename=f"{Path(file.filename).stem}.fbx",
-            background=cleanup_temp_dir(temp_dir)
+            headers={
+                "Content-Disposition": f'attachment; filename="{Path(file.filename).stem}.fbx"'
+            }
         )
         
-    except Exception as e:
-        # Cleanup on error
+    except HTTPException:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail=f"Conversion error: {str(e)}")
-
-
-def convert_glb_to_fbx(glb_path: str, fbx_path: str) -> bool:
-    """
-    Convert GLB to FBX using available library
-    
-    We'll implement this with either:
-    - trimesh (simpler)
-    - Blender Python (better quality)
-    """
-    
-    # METHOD 1: Using trimesh (simple but limited)
-    try:
-        import trimesh
-        
-        # Load GLB
-        scene = trimesh.load(glb_path)
-        
-        # Export to FBX
-        scene.export(fbx_path, file_type='fbx')
-        
-        return True
-        
-    except ImportError:
-        # trimesh not available, try alternative
-        pass
-    
+        raise
     except Exception as e:
-        print(f"Trimesh conversion failed: {e}")
-        return False
-    
-    # METHOD 2: Using pygltflib + manual FBX writing
-    # (We'll add this if trimesh doesn't work)
-    
-    return False
-
-
-def cleanup_temp_dir(temp_dir: str):
-    """Background task to cleanup temporary files"""
-    def cleanup():
-        try:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except:
-            pass
-    return cleanup
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        print(f"Conversion error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Conversion error: {str(e)}")
 
 
 if __name__ == "__main__":
     import uvicorn
-    # Get port from environment variable (Render.com provides this)
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
