@@ -134,14 +134,12 @@ bpy.ops.export_scene.fbx(filepath='{fbx_path}', use_selection=False)
         if not success:
             try:
                 print("Trying FBX SDK conversion...")
-                from fbx import *
-                
-                # This would require FBX SDK Python bindings
-                # For now, we'll skip this method
-                error_msg = "FBX SDK not implemented yet"
+                # FBX SDK not implemented - would require additional setup
+                error_msg = "FBX SDK not available"
                 print(error_msg)
-            except:
-                pass
+            except Exception as e:
+                error_msg = f"FBX SDK error: {str(e)}"
+                print(error_msg)
         
         if not success:
             raise HTTPException(
