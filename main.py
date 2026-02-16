@@ -1,16 +1,15 @@
 """
 Morphara FBX Converter Service
-Converts GLB files to FBX format using pygltflib and FBX SDK
+Converts GLB files to FBX format using pymeshlab
 """
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import tempfile
 import os
 import shutil
 from pathlib import Path
-import subprocess
 
 app = FastAPI(title="Morphara FBX Converter")
 
@@ -29,148 +28,86 @@ async def root():
     return {
         "service": "Morphara FBX Converter",
         "status": "running",
-        "version": "1.0.0",
-        "methods": ["blender", "assimp"]
+        "version": "1.0.1",
+        "method": "pymeshlab"
     }
 
 @app.get("/health")
 async def health_check():
     """Health check for monitoring"""
-    return {"status": "healthy"}
+    return {"status":"healthy"}
 
 @app.post("/convert-to-fbx")
 async def convert_to_fbx(file: UploadFile = File(...)):
-    """
-    Convert GLB file to FBX format
+    """Convert GLB to FBX using pymeshlab"""
     
-    Args:
-        file: GLB file uploaded by user
-        
-    Returns:
-        FBX file
-    """
-    
-    # Validate file type
     if not file.filename.endswith('.glb'):
         raise HTTPException(status_code=400, detail="Only GLB files are supported")
     
-    # Create temp directory for processing
     temp_dir = tempfile.mkdtemp()
     
     try:
-        # Save uploaded GLB
+        # Save GLB
         glb_path = os.path.join(temp_dir, "input.glb")
+        content = await file.read()
+        
         with open(glb_path, "wb") as f:
-            content = await file.read()
             f.write(content)
         
         print(f"Saved GLB: {glb_path} ({len(content)} bytes)")
         
-        # Define output FBX path
+        # Output path
         fbx_path = os.path.join(temp_dir, "output.fbx")
         
-        # Try conversion methods in order
-        success = False
-        error_msg = ""
-        
-        # Method 1: Try assimp (fastest, most reliable)
+        # Convert using pymeshlab
         try:
-            print("Trying assimp conversion...")
-            result = subprocess.run(
-                ['assimp', 'export', glb_path, fbx_path, '-f', 'fbx'],
-                capture_output=True,
-                text=True,
-                timeout=60
+            import pymeshlab
+            
+            print("Loading mesh with pymeshlab...")
+            ms = pymeshlab.MeshSet()
+            ms.load_new_mesh(glb_path)
+            
+            print(f"Mesh loaded: {ms.number_of_meshes()} mesh(es)")
+            
+            # Export to FBX
+            print("Exporting to FBX...")
+            ms.save_current_mesh(fbx_path, save_face_color=False)
+            
+            if not os.path.exists(fbx_path):
+                raise Exception("FBX file was not created")
+            
+            fbx_size = os.path.getsize(fbx_path)
+            print(f"✓ FBX created: {fbx_size} bytes")
+            
+            return FileResponse(
+                path=fbx_path,
+                media_type="application/octet-stream",
+                filename=f"{Path(file.filename).stem}.fbx",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{Path(file.filename).stem}.fbx"'
+                }
             )
             
-            if result.returncode == 0 and os.path.exists(fbx_path):
-                print("✓ Assimp conversion successful")
-                success = True
-            else:
-                error_msg = f"Assimp failed: {result.stderr}"
-                print(error_msg)
-        except FileNotFoundError:
-            error_msg = "Assimp not installed"
-            print(error_msg)
-        except Exception as e:
-            error_msg = f"Assimp error: {str(e)}"
-            print(error_msg)
-        
-        # Method 2: Try Blender (best quality, slower)
-        if not success:
-            try:
-                print("Trying Blender conversion...")
-                blender_script = f"""
-import bpy
-bpy.ops.wm.read_factory_settings(use_empty=True)
-bpy.ops.import_scene.gltf(filepath='{glb_path}')
-bpy.ops.export_scene.fbx(filepath='{fbx_path}', use_selection=False)
-"""
-                script_path = os.path.join(temp_dir, "convert.py")
-                with open(script_path, 'w') as f:
-                    f.write(blender_script)
-                
-                result = subprocess.run(
-                    ['blender', '--background', '--python', script_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=120
-                )
-                
-                if os.path.exists(fbx_path):
-                    print("✓ Blender conversion successful")
-                    success = True
-                else:
-                    error_msg = f"Blender failed: {result.stderr}"
-                    print(error_msg)
-            except FileNotFoundError:
-                error_msg = "Blender not installed"
-                print(error_msg)
-            except Exception as e:
-                error_msg = f"Blender error: {str(e)}"
-                print(error_msg)
-        
-        # Method 3: Use FBX SDK directly (if available)
-        if not success:
-            try:
-                print("Trying FBX SDK conversion...")
-                # FBX SDK not implemented - would require additional setup
-                error_msg = "FBX SDK not available"
-                print(error_msg)
-            except Exception as e:
-                error_msg = f"FBX SDK error: {str(e)}"
-                print(error_msg)
-        
-        if not success:
+        except ImportError as e:
+            print(f"pymeshlab not available: {e}")
             raise HTTPException(
                 status_code=500, 
-                detail=f"All conversion methods failed. Last error: {error_msg}"
+                detail="pymeshlab library not installed"
             )
-        
-        # Verify FBX was created
-        if not os.path.exists(fbx_path):
-            raise HTTPException(status_code=500, detail="FBX file was not created")
-        
-        fbx_size = os.path.getsize(fbx_path)
-        print(f"FBX created: {fbx_path} ({fbx_size} bytes)")
-        
-        # Return the FBX file
-        return FileResponse(
-            path=fbx_path,
-            media_type="application/octet-stream",
-            filename=f"{Path(file.filename).stem}.fbx",
-            headers={
-                "Content-Disposition": f'attachment; filename="{Path(file.filename).stem}.fbx"'
-            }
-        )
+        except Exception as e:
+            print(f"Conversion failed: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Conversion failed: {str(e)}"
+            )
         
     except HTTPException:
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        print(f"Conversion error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Conversion error: {str(e)}")
+        print(f"Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 
 if __name__ == "__main__":
