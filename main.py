@@ -116,11 +116,29 @@ except Exception as e:
         with open(script_path, 'w') as f:
             f.write(script)
         
-        # Run Blender
+        # Run Blender with full path
         print("🎨 Running Blender conversion...")
         
+        # Try multiple possible Blender locations
+        blender_paths = [
+            '/usr/local/bin/blender',
+            '/opt/blender-4.0.2-linux-x64/blender',
+            '/opt/blender/blender',
+            'blender'
+        ]
+        
+        blender_cmd = None
+        for path in blender_paths:
+            if os.path.exists(path) or path == 'blender':
+                blender_cmd = path
+                print(f"Found Blender at: {blender_cmd}")
+                break
+        
+        if not blender_cmd:
+            raise Exception("Blender not found in any expected location")
+        
         result = subprocess.run(
-            ['blender', '--background', '--python', script_path],
+            [blender_cmd, '--background', '--python', script_path],
             capture_output=True,
             text=True,
             timeout=120
