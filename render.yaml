@@ -1,7 +1,0 @@
-services:
-  - type: web
-    name: morphara-fbx-converter
-    env: python
-    runtime: python-3.11
-    buildCommand: bash build.sh
-    startCommand: python main.py
