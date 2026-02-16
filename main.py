@@ -67,11 +67,11 @@ async def convert_to_fbx(file: UploadFile = File(...)):
             ms = pymeshlab.MeshSet()
             ms.load_new_mesh(glb_path)
             
-            print(f"Mesh loaded: {ms.number_of_meshes()} mesh(es)")
+            print(f"Mesh loaded: {ms.current_mesh().vertex_number()} vertices")
             
             # Export to FBX
             print("Exporting to FBX...")
-            ms.save_current_mesh(fbx_path, save_face_color=False)
+            ms.save_current_mesh(fbx_path)
             
             if not os.path.exists(fbx_path):
                 raise Exception("FBX file was not created")
