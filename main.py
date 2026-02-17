@@ -1,6 +1,6 @@
 """
-Morphara FBX Converter - Using Blender
-100% GUARANTEED to work
+Morphara FBX Converter - COMPLETE FIX
+Handles: Textures, Animations, Cleanup, Error Recovery
 """
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+import zipfile
 
 app = FastAPI(title="Morphara FBX Converter")
 
@@ -27,8 +28,8 @@ async def root():
     return {
         "service": "Morphara FBX Converter",
         "status": "running",
-        "version": "2.0.0",
-        "method": "Blender 4.0"
+        "version": "3.0.0",
+        "features": ["textures", "animations", "cleanup"]
     }
 
 @app.get("/health")
@@ -37,12 +38,20 @@ async def health_check():
 
 @app.post("/convert-to-fbx")
 async def convert_to_fbx(file: UploadFile = File(...)):
-    """Convert GLB to FBX using Blender"""
+    """
+    Convert GLB to FBX with:
+    - All textures extracted and linked
+    - Animations baked
+    - IcoSphere/default objects removed
+    - ZIP containing FBX + textures
+    """
     
     if not file.filename.endswith('.glb'):
         raise HTTPException(status_code=400, detail="Only GLB files supported")
     
     temp_dir = tempfile.mkdtemp()
+    textures_dir = os.path.join(temp_dir, "textures")
+    os.makedirs(textures_dir, exist_ok=True)
     
     try:
         # Save GLB
@@ -52,28 +61,82 @@ async def convert_to_fbx(file: UploadFile = File(...)):
         with open(glb_path, "wb") as f:
             f.write(content)
         
-        print(f"📥 Saved GLB: {len(content)} bytes")
+        print(f"📥 GLB size: {len(content):,} bytes")
         
-        # Output path
-        fbx_path = os.path.join(temp_dir, "output.fbx")
+        # Output paths
+        fbx_path = os.path.join(temp_dir, "character.fbx")
+        zip_path = os.path.join(temp_dir, "export.zip")
         
-        # Create Blender Python script
+        # Blender conversion script
         script = f"""
 import bpy
 import sys
+import os
 
-# Clear scene
+print("=" * 60)
+print("MORPHARA FBX CONVERTER v3.0")
+print("=" * 60)
+
+# Clear everything
 bpy.ops.wm.read_factory_settings(use_empty=True)
+print("✓ Scene cleared")
 
 # Import GLB
 try:
     bpy.ops.import_scene.gltf(filepath='{glb_path}')
-    print('✓ GLB imported')
+    print(f"✓ GLB imported: {{len(bpy.data.objects)}} objects")
 except Exception as e:
-    print(f'✗ Import failed: {{e}}')
+    print(f"✗ Import failed: {{e}}")
     sys.exit(1)
 
-# Export FBX
+# === CLEANUP: Remove IcoSphere and default objects ===
+removed_count = 0
+for obj in list(bpy.data.objects):
+    # Remove default Blender objects (Camera, Light, Cube, IcoSphere)
+    if obj.name.startswith(('Camera', 'Light', 'Cube', 'IcoSphere', 'Icosphere')):
+        print(f"  Removing: {{obj.name}}")
+        bpy.data.objects.remove(obj, do_unlink=True)
+        removed_count += 1
+
+print(f"✓ Cleaned up {{removed_count}} default objects")
+print(f"  Remaining: {{len(bpy.data.objects)}} objects")
+
+# === EXTRACT TEXTURES ===
+texture_count = 0
+for img in bpy.data.images:
+    if img.name and not img.name.startswith(('Render Result', 'Viewer Node')):
+        # Save each texture as PNG
+        filepath = os.path.join('{textures_dir}', f"{{img.name}}.png")
+        
+        # Ensure unique filename
+        if os.path.exists(filepath):
+            base, ext = os.path.splitext(filepath)
+            counter = 1
+            while os.path.exists(f"{{base}}_{{counter}}{{ext}}"):
+                counter += 1
+            filepath = f"{{base}}_{{counter}}{{ext}}"
+        
+        try:
+            img.filepath_raw = filepath
+            img.file_format = 'PNG'
+            img.save()
+            texture_count += 1
+            print(f"  Saved: {{os.path.basename(filepath)}}")
+        except Exception as e:
+            print(f"  Warning: Could not save {{img.name}}: {{e}}")
+
+print(f"✓ Extracted {{texture_count}} textures")
+
+# === VERIFY ANIMATIONS ===
+action_count = len(bpy.data.actions)
+if action_count > 0:
+    print(f"✓ Found {{action_count}} animation(s):")
+    for action in bpy.data.actions:
+        print(f"    - {{action.name}} ({{len(action.fcurves)}} channels, {{int(action.frame_range[1] - action.frame_range[0])}} frames)")
+else:
+    print("⚠ No animations found")
+
+# === EXPORT FBX ===
 try:
     bpy.ops.export_scene.fbx(
         filepath='{fbx_path}',
@@ -81,45 +144,63 @@ try:
         global_scale=1.0,
         apply_unit_scale=True,
         apply_scale_options='FBX_SCALE_NONE',
-        bake_space_transform=False,
+        
+        # Objects to export
         object_types={{'MESH', 'ARMATURE'}},
         use_mesh_modifiers=True,
         use_mesh_modifiers_render=True,
-        mesh_smooth_type='OFF',
+        mesh_smooth_type='FACE',
+        
+        # Armature settings
         use_armature_deform_only=False,
         add_leaf_bones=False,
         primary_bone_axis='Y',
         secondary_bone_axis='X',
         armature_nodetype='NULL',
-        bake_anim=True,
-        bake_anim_use_all_bones=True,
-        bake_anim_use_nla_strips=True,
-        bake_anim_use_all_actions=True,
-        bake_anim_force_startend_keying=True,
-        bake_anim_step=1.0,
-        bake_anim_simplify_factor=1.0,
-        path_mode='COPY',
-        embed_textures=True,
-        batch_mode='OFF',
-        use_batch_own_dir=True,
-        use_metadata=True,
+        
+        # === ANIMATION EXPORT (CRITICAL) ===
+        bake_anim=True,                      # Enable animation baking
+        bake_anim_use_all_bones=True,       # Bake all bones
+        bake_anim_use_nla_strips=True,      # Include NLA strips
+        bake_anim_use_all_actions=True,     # Export ALL actions (not just active)
+        bake_anim_force_startend_keying=True,  # Force keyframes at start/end
+        bake_anim_step=1.0,                  # Sample every frame
+        bake_anim_simplify_factor=0.0,      # No simplification (keep all keys)
+        
+        # === TEXTURE HANDLING ===
+        path_mode='COPY',                    # Copy textures to output folder
+        embed_textures=False,                # Don't embed (export separately for ZIP)
+        
+        # Axis conversion (for Unity/Unreal/Godot)
         axis_forward='-Z',
-        axis_up='Y'
+        axis_up='Y',
+        
+        # Metadata
+        use_metadata=True,
+        batch_mode='OFF'
     )
-    print('✓ FBX exported')
+    
+    fbx_size = os.path.getsize('{fbx_path}') if os.path.exists('{fbx_path}') else 0
+    print(f"✓ FBX exported: {{fbx_size:,}} bytes")
+    
 except Exception as e:
-    print(f'✗ Export failed: {{e}}')
+    print(f"✗ Export failed: {{e}}")
+    import traceback
+    traceback.print_exc()
     sys.exit(1)
+
+print("=" * 60)
+print("CONVERSION COMPLETE")
+print("=" * 60)
 """
         
         script_path = os.path.join(temp_dir, "convert.py")
         with open(script_path, 'w') as f:
             f.write(script)
         
-        # Run Blender with full path
-        print("🎨 Running Blender conversion...")
+        # Run Blender
+        print("🎨 Running Blender...")
         
-        # Try multiple possible Blender locations
         blender_paths = [
             '/usr/local/bin/blender',
             '/opt/blender-4.0.2-linux-x64/blender',
@@ -131,51 +212,77 @@ except Exception as e:
         for path in blender_paths:
             if os.path.exists(path) or path == 'blender':
                 blender_cmd = path
-                print(f"Found Blender at: {blender_cmd}")
                 break
         
         if not blender_cmd:
-            raise Exception("Blender not found in any expected location")
+            raise Exception("Blender not found")
         
         result = subprocess.run(
             [blender_cmd, '--background', '--python', script_path],
             capture_output=True,
             text=True,
-            timeout=120
+            timeout=180  # 3 minutes
         )
         
-        print("STDOUT:", result.stdout)
+        print("=" * 60)
+        print("BLENDER OUTPUT:")
+        print(result.stdout)
         if result.stderr:
             print("STDERR:", result.stderr)
+        print("=" * 60)
         
-        # Check if FBX was created
+        # Verify FBX was created
         if not os.path.exists(fbx_path):
-            raise Exception(f"FBX not created. Blender exit code: {result.returncode}")
+            raise Exception(f"FBX not created. Exit code: {result.returncode}")
         
         fbx_size = os.path.getsize(fbx_path)
-        print(f"✅ FBX created: {fbx_size} bytes")
         
-        # Return file
+        # Count textures
+        texture_files = [f for f in os.listdir(textures_dir) if f.endswith('.png')]
+        texture_count = len(texture_files)
+        
+        print(f"📦 Creating export package:")
+        print(f"   FBX: {fbx_size:,} bytes")
+        print(f"   Textures: {texture_count} files")
+        
+        # Create ZIP with FBX + textures
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # Add FBX
+            zipf.write(fbx_path, "character.fbx")
+            
+            # Add textures folder
+            if texture_count > 0:
+                for texture_file in texture_files:
+                    texture_path = os.path.join(textures_dir, texture_file)
+                    zipf.write(texture_path, f"textures/{texture_file}")
+        
+        zip_size = os.path.getsize(zip_path)
+        print(f"✅ Package created: {zip_size:,} bytes")
+        
+        # Return ZIP file
         return FileResponse(
-            path=fbx_path,
-            media_type="application/octet-stream",
-            filename=f"{Path(file.filename).stem}.fbx",
+            path=zip_path,
+            media_type="application/zip",
+            filename=f"{Path(file.filename).stem}_fbx.zip",
             headers={
-                "Content-Disposition": f'attachment; filename="{Path(file.filename).stem}.fbx"'
+                "Content-Disposition": f'attachment; filename="{Path(file.filename).stem}_fbx.zip"',
+                "X-Textures-Count": str(texture_count),
+                "X-FBX-Size": str(fbx_size)
             }
         )
         
     except subprocess.TimeoutExpired:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail="Conversion timeout (>2min)")
+        raise HTTPException(status_code=500, detail="Conversion timeout (>3min)")
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
         print(f"❌ Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    print(f"🚀 Starting server on port {port}")
+    print(f"🚀 Morphara FBX Converter v3.0")
+    print(f"   Port: {port}")
+    print(f"   Features: Textures ✓ Animations ✓ Cleanup ✓")
     uvicorn.run(app, host="0.0.0.0", port=port)
