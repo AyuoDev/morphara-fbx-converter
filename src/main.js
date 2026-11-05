@@ -16,7 +16,33 @@ const progressPercent = document.querySelector("#progress-percent");
 const progressFill = document.querySelector("#progress-fill");
 const resultDetail = document.querySelector("#result-detail");
 const downloadButton = document.querySelector("#download-button");
+const adConsent = document.querySelector("#ad-consent");
+const adSlot = document.querySelector("#ad-slot");
+const adConsentKey = "morphara-ad-consent-v1";
 const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+
+function loadAd() {
+  const script = document.createElement("script");
+  script.src = "https://pl28869091.profitableratecpmnetwork.com/f8/01/fa/f801fa4c6aae2920887cb8637d49839d.js";
+  document.querySelector("#adsterra-ad-slot").append(script);
+  adSlot.hidden = false;
+}
+
+function chooseAdPreference(value) {
+  localStorage.setItem(adConsentKey, value);
+  window.location.reload();
+}
+
+const savedAdConsent = localStorage.getItem(adConsentKey);
+if (savedAdConsent === "accepted") loadAd();
+else if (savedAdConsent !== "rejected") adConsent.hidden = false;
+
+document.querySelector("#allow-ads").addEventListener("click", () => chooseAdPreference("accepted"));
+document.querySelector("#decline-ads").addEventListener("click", () => chooseAdPreference("rejected"));
+document.querySelector("#ad-preferences").addEventListener("click", () => {
+  adConsent.hidden = false;
+  adConsent.scrollIntoView({ behavior: "smooth", block: "center" });
+});
 
 let files = [];
 let entryIndex = -1;
