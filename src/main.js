@@ -29,19 +29,21 @@ function loadAd() {
 }
 
 function chooseAdPreference(value) {
+  const previous = localStorage.getItem(adConsentKey);
   localStorage.setItem(adConsentKey, value);
-  window.location.reload();
+  adConsent.close();
+  if (value === "accepted") loadAd();
+  else if (previous === "accepted") window.location.reload();
 }
 
 const savedAdConsent = localStorage.getItem(adConsentKey);
 if (savedAdConsent === "accepted") loadAd();
-else if (savedAdConsent !== "rejected") adConsent.hidden = false;
+else if (savedAdConsent !== "rejected") adConsent.showModal();
 
 document.querySelector("#allow-ads").addEventListener("click", () => chooseAdPreference("accepted"));
 document.querySelector("#decline-ads").addEventListener("click", () => chooseAdPreference("rejected"));
 document.querySelector("#ad-preferences").addEventListener("click", () => {
-  adConsent.hidden = false;
-  adConsent.scrollIntoView({ behavior: "smooth", block: "center" });
+  adConsent.showModal();
 });
 
 let files = [];
